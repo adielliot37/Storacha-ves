@@ -31,6 +31,8 @@ storacha-ves/
 │   │       └── merkle.js     # Merkle tree and proof verification  
 └── README.md
 
+<img width="1207" height="593" alt="Screenshot 2025-08-12 at 2 33 57 PM" src="https://github.com/user-attachments/assets/06c70f2d-003a-4c8c-a81b-e6d5192d3c5c" />
+
 ## Technical Flow
 
 ### 1. Encryption and Upload
