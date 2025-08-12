@@ -1,0 +1,71 @@
+:root {
+    --bg: #0b0f1a;
+    --panel: #11182a;
+    --ink: #e7ecff;
+    --muted: #aab3d3;
+    --accent: #7c9dff;
+    --ok: #36d399;
+    --warn: #fbbf24;
+    --err: #f87171;
+    --card: #0f1628;
+    --border: #1e2a44;
+  }
+  
+  * { box-sizing: border-box; }
+  html, body, #root { height: 100%; background: var(--bg); color: var(--ink); }
+  
+  .app {
+    max-width: 1000px; margin: 24px auto; padding: 0 16px; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto;
+  }
+  
+  .h1 { font-size: 28px; font-weight: 700; letter-spacing: .2px; }
+  .subtle { color: var(--muted); }
+  
+  .row { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  @media (min-width: 900px) { .row { grid-template-columns: 1fr 1fr; } }
+  
+  .card {
+    background: linear-gradient(180deg, var(--card), #0b1324);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 16px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.25);
+  }
+  
+  .btn {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 14px;
+    color: var(--ink);
+    cursor: pointer;
+    transition: .2s ease;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  
+  .pill {
+    display: inline-block; padding: 4px 10px; border-radius: 999px;
+    background: #0e1a33; border: 1px solid var(--border); color: var(--muted);
+    font-size: 12px; letter-spacing: .2px;
+  }
+  .pill.ok { color: #052b1a; background: #b9f6de; border-color: #87edc3; }
+  .pill.warn { color: #3a2503; background: #ffe6b0; border-color: #ffd36e; }
+  .pill.err { color: #3d0a0a; background: #ffc2c2; border-color: #ff9e9e; }
+  
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; }
+  .k { color: var(--muted); }
+  .v { color: var(--ink); word-break: break-all; }
+  
+  .log {
+    background: #0a1122; border: 1px solid var(--border); border-radius: 12px; padding: 12px; height: 220px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px;
+  }
+  .log .t { color: var(--muted); }
+  .log .ok { color: var(--ok); }
+  .log .err { color: var(--err); }
+  .log .acc { color: var(--accent); }
+  
+  .progress {
+    height: 8px; background: #0d1324; border: 1px solid var(--border); border-radius: 999px; overflow: hidden;
+  }
+  .progress > div { height: 100%; background: linear-gradient(90deg, var(--accent), #9ab6ff); width: 0%; transition: width .2s ease; }
