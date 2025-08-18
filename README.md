@@ -1,13 +1,34 @@
 # Storacha VES (Verifiable Encrypted Storage)
 
-This project implements a verifiable encrypted storage system using Storacha’s MCP REST API. It provides client-side encryption, decentralized storage, integrity verification, and decryption using a locally-held AES key.
+This project implements a verifiable encrypted storage system using Storacha's MCP REST API. It provides client-side encryption, decentralized storage, integrity verification, and decryption with comprehensive key management and automatic backup systems.
 
 ## Features
-- AES-256-GCM encryption in the browser
-- Chunked file upload to Storacha via MCP REST API
-- Manifest file containing Merkle root, IVs, and chunk CIDs
+
+### Core Functionality
+- AES-256-GCM encryption in the browser with WebCrypto API
+- Password-based key derivation using PBKDF2 (100,000 iterations, SHA-256)
+- Encrypted key export/import with password protection
+- Automatic encrypted key backup generation
+- Chunked file upload to Storacha via MCP REST API (4MB chunks)
+- File size validation (10MB limit)
+
+### Cryptographic Operations
+- SHA-256 Merkle tree construction for integrity verification
 - Merkle proof verification without decryption
+- Challenge-response integrity verification system
 - Client-side decryption and file reconstruction
+
+### Key Management
+- Smart key workflow: checks for existing keys before generating new ones
+- Three key sources: generated, imported from file, or derived from password
+- Automatic encrypted backup download for generated keys
+- Password strength validation for derived keys
+- Session-based key storage (lost on refresh unless backed up)
+
+### Data Persistence
+- Local manifest history storage (last 10 files) in browser localStorage
+- Manifest recovery and reloading functionality
+- Progress tracking with time estimates for upload operations
 
 ## Project Structure
 storacha-ves/  
@@ -35,46 +56,55 @@ storacha-ves/
 
 ## Technical Flow
 
-### 1. Encryption and Upload
-1. The user selects a file in the browser.
-2. The app generates an AES-256-GCM key using WebCrypto and stores it only in memory (React state).
-3. The file is split into 4MB chunks.
-4. For each chunk:
+### 1. Key Management and Encryption Setup
+1. Before encryption, the system checks for existing keys in memory.
+2. If no key exists, the user is prompted to:
+   - Generate a new AES-256-GCM key (with automatic encrypted backup)
+   - Import an existing encrypted key file
+   - Derive a key from password using PBKDF2
+3. For generated keys, an automatic encrypted backup is created and downloaded.
+4. For password-derived keys, password strength is validated (minimum 8 characters, mixed case, numbers, symbols).
+
+### 2. Encryption and Upload
+1. The user selects a file (validated against 10MB limit).
+2. The file is split into 4MB chunks.
+3. For each chunk:
    - Generate a random 12-byte IV.
-   - Encrypt the chunk with AES-256-GCM using the key and IV.
+   - Encrypt the chunk with AES-256-GCM using the established key and IV.
    - Compute SHA-256 hash of the ciphertext.
    - Send the ciphertext to the server with `POST /upload-chunk`.
-5. The server calls MCP REST `tools/call` with method `upload` and receives:
+4. The server calls MCP REST `tools/call` with method `upload` and receives:
    - `payload.files[name]['/']` → File CID (used in `chunkCIDs`)
    - `payload.root['/']` → Root CID (not used in retrieval)
-6. The client collects all chunk CIDs and SHA-256 hashes to build a Merkle tree and compute the Merkle root.
-7. A manifest JSON is created containing:
-   - version
-   - original filename
-   - total file size
-   - chunk size
-   - `leaves`: array of ciphertext SHA-256 hashes
-   - `merkleRootSHA256`
-   - `chunkCIDs`: CIDs for each encrypted chunk
-   - `ivs`: initialization vectors for each chunk
-   - encryption and hash algorithm info
-8. The manifest is uploaded via `POST /upload-manifest` and its CID is stored.
+5. The client collects all chunk CIDs and SHA-256 hashes to build a Merkle tree and compute the Merkle root.
+6. A manifest JSON is created and uploaded via `POST /upload-manifest`.
+7. The manifest is stored in local browser history (last 10 manifests) for recovery.
 
-### 2. Verification (Challenge)
-1. On “Challenge”, a random chunk index is selected.
+### 3. Verification (Challenge)
+1. A random chunk index is selected from the manifest.
 2. The chunk is fetched from IPFS using its CID.
-3. SHA-256 hash is computed and compared against the manifest’s stored hash using a Merkle proof.
+3. SHA-256 hash is computed and compared against the manifest's stored hash using a Merkle proof.
 4. If the proof matches the Merkle root, integrity is verified without decryption.
 
-### 3. Decryption
-1. On “Decrypt”, all chunk CIDs are fetched from IPFS.
-2. Each chunk is decrypted with AES-256-GCM using the IV from the manifest and the AES key in memory.
+### 4. Decryption
+1. All chunk CIDs are fetched from IPFS in sequence.
+2. Each chunk is decrypted with AES-256-GCM using the IV from the manifest and the AES key.
 3. The decrypted chunks are concatenated into the original file for download.
+4. Progress tracking shows completion percentage and estimated time remaining.
 
 ## Key Storage and Security
-- The AES key is generated and stored only in browser memory during the session.
-- It is never uploaded to the server or stored on Storacha.
+
+### Key Management Security
+- AES keys are generated using WebCrypto API and stored only in browser memory during the session.
+- Keys are never uploaded to the server or stored on Storacha.
+- Automatic encrypted key backups use PBKDF2 (100,000 iterations, SHA-256) for password protection.
+- Exported key files contain: encrypted key data, salt, IV, timestamp, and version information.
+
+### Cryptographic Security
 - Without the AES key, encrypted chunks cannot be decrypted even if their CIDs and IVs are known.
+- Merkle tree verification ensures data integrity without requiring decryption.
+- Each chunk uses a unique random IV, preventing replay attacks.
+- Password-derived keys use cryptographically secure salt generation.
 
 ## How to Run
 ### Backend
