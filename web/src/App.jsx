@@ -234,14 +234,25 @@ export default function App() {
 
   return (
     <div className="app">
-      <div style={{ display:'flex', alignItems:'baseline', gap:12 }}>
-        <div className="h1">Storacha VES — MCP</div>
-        <span className="pill">AES-256-GCM</span>
-        <span className="pill">SHA-256 Merkle</span>
-        {busy ? <span className="pill warn">Working…</span> : <span className="pill ok">Idle</span>}
-      </div>
-      <div className="subtle" style={{ marginTop: 4 }}>
-        Encrypt → Chunk → Upload (MCP) → Manifest → Challenge → Decrypt
+      <div style={{ 
+        display:'flex', 
+        alignItems:'center', 
+        justifyContent:'space-between',
+        marginBottom: 8,
+        flexWrap: 'wrap',
+        gap: 12
+      }}>
+        <div>
+          <div className="h1" style={{ marginBottom: 4 }}>Storacha VES</div>
+          <div className="subtle" style={{ fontSize: '14px' }}>
+            Verifiable Encrypted Storage with Merkle Challenge Protocol
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span className="pill">AES-256-GCM</span>
+          <span className="pill">SHA-256 Merkle</span>
+          {busy ? <span className="pill warn">Working…</span> : <span className="pill ok">Ready</span>}
+        </div>
       </div>
 
       {showWarning && (
@@ -283,35 +294,79 @@ export default function App() {
 
       <div className="row" style={{ marginTop: 16 }}>
         <div className="card">
-          <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap: 'wrap' }}>
-            <input type="file" onChange={onPick} />
-            <button className="btn" onClick={encryptAndUpload} disabled={!file || busy}>Encrypt & Upload</button>
-            <button className="btn" onClick={runChallenge} disabled={!layers || busy}>Challenge</button>
-            <button className="btn" onClick={decryptAll} disabled={!manifest || !aes || busy}>Decrypt</button>
+          <div style={{ marginBottom: 20 }}>
+            <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 600 }}>File Operations</h3>
+            <div style={{ display:'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, gridColumn: 'span 2' }}>
+                <input 
+                  type="file" 
+                  onChange={onPick}
+                  style={{ 
+                    padding: '10px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border)',
+                    backgroundColor: 'var(--panel)',
+                    color: 'var(--ink)',
+                    fontSize: '14px'
+                  }}
+                />
+              </div>
+              <button className="btn" onClick={encryptAndUpload} disabled={!file || busy}>
+                Encrypt & Upload
+              </button>
+              <button className="btn" onClick={runChallenge} disabled={!layers || busy}>
+                Challenge
+              </button>
+              <button className="btn" onClick={decryptAll} disabled={!manifest || !aes || busy}>
+                Decrypt
+              </button>
+            </div>
           </div>
           
-          <div style={{ display:'flex', gap:8, alignItems:'center', marginTop: 12, flexWrap: 'wrap' }}>
-            <div style={{ fontWeight: 700, fontSize: '14px' }}>Key Management:</div>
-            <button className="btn" onClick={importKey} disabled={busy} style={{backgroundColor: '#4CAF50'}}>Import Key</button>
-            <button className="btn" onClick={deriveKey} disabled={busy} style={{backgroundColor: '#2196F3'}}>Derive from Password</button>
-            <button className="btn" onClick={exportKey} disabled={!aes || busy} style={{backgroundColor: '#FF9800'}}>Export Key</button>
-            <button className="btn" onClick={clearKey} disabled={!aes || busy} style={{backgroundColor: '#f44336'}}>Clear Key</button>
+          <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+            <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 600 }}>Key Management</h3>
+            <div style={{ display:'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
+              <button className="btn key-btn import" onClick={importKey} disabled={busy}>
+                Import Key
+              </button>
+              <button className="btn key-btn derive" onClick={deriveKey} disabled={busy}>
+                Derive Key  
+              </button>
+              <button className="btn key-btn export" onClick={exportKey} disabled={!aes || busy}>
+                Export Key
+              </button>
+              <button className="btn key-btn clear" onClick={clearKey} disabled={!aes || busy}>
+                Clear Key
+              </button>
+            </div>
           </div>
           
           {aes && (
             <div style={{ 
-              marginTop: 8, 
-              padding: 8, 
+              marginTop: 16,
+              padding: 12, 
               backgroundColor: keySource === 'generated' ? '#2a1f0a' : '#1a2a1a', 
-              borderRadius: 4, 
-              fontSize: '12px',
+              borderRadius: 8, 
+              fontSize: '13px',
               color: keySource === 'generated' ? '#fbbf24' : '#36d399',
-              border: `1px solid ${keySource === 'generated' ? '#fbbf24' : '#36d399'}`
+              border: `1px solid ${keySource === 'generated' ? '#fbbf24' : '#36d399'}`,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8
             }}>
-              ⚠️ <strong>Key Status:</strong> {keySource === 'generated' ? 'Generated (will be lost on refresh)' : 
+              <span style={{ fontSize: '16px' }}>
+                {keySource === 'generated' ? '⚠️' : ''}
+              </span>
+              <div>
+                <strong>Key Status:</strong> {keySource === 'generated' ? 'Generated (will be lost on refresh)' : 
                                               keySource === 'imported' ? 'Imported from file' : 
                                               keySource === 'derived' ? 'Derived from password' : 'Unknown'}
-              {keySource === 'generated' && ' - Export your key to save it!'}
+                {keySource === 'generated' && (
+                  <div style={{ marginTop: 4, fontWeight: 600 }}>
+                    Export your key immediately to save it!
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -319,35 +374,64 @@ export default function App() {
             <div className="progress"><div style={{ width: `${progress}%` }} /></div>
           </div>
 
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 12, marginTop: 16 }}>
-            <div className="kv">
-              <div className="k">File</div><div className="v">{manifest?.fileName || file?.name || '-'}</div>
-              <div className="k">Size</div><div className="v">{manifest?.totalSize ?? file?.size ?? '-'}</div>
-              <div className="k">Chunks</div><div className="v">{manifest?.chunkCIDs?.length ?? '-'}</div>
-              <div className="k">Merkle Root</div><div className="v">{short(rootHex, 16) || '-'}</div>
-              <div className="k">Manifest CID</div><div className="v">{manifest?.manifestCid ? short(manifest.manifestCid, 16) : '-'}</div>
-              <div className="k">AES Key</div><div className="v">{aes?.rawHex ? short(aes.rawHex, 16) : '-'}</div>
-              <div className="k">Key Source</div><div className="v">{keySource || '-'}</div>
-            </div>
-
-            <div className="kv">
-              <div className="k">Last Challenge</div>
-              <div className="v">
-                {lastChallenge
-                  ? <>
-                      index <b>{lastChallenge.idx}</b> — {short(lastChallenge.cid, 12)} — {lastChallenge.ok
-                        ? <span className="pill ok">OK</span>
-                        : <span className="pill err">FAILED</span>}
-                    </>
-                  : '—'}
+          <div style={{ marginTop: 20 }}>
+            <h3 style={{ margin: '0 0 16px 0', fontSize: '16px', fontWeight: 600 }}>File Information</h3>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap: 20 }} className="responsive-grid">
+              
+              <div>
+                <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 600, color: 'var(--accent)' }}>File Details</h4>
+                <div className="data-grid">
+                  <div className="label">File</div>
+                  <div className="value">{manifest?.fileName || file?.name || '—'}</div>
+                  
+                  <div className="label">Size</div>
+                  <div className="value">{manifest?.totalSize ?? file?.size ?? '—'}</div>
+                  
+                  <div className="label">Chunks</div>
+                  <div className="value">{manifest?.chunkCIDs?.length ?? '—'}</div>
+                  
+                  <div className="label">Merkle Root</div>
+                  <div className="value">{short(rootHex, 16) || '—'}</div>
+                  
+                  <div className="label">Manifest CID</div>
+                  <div className="value">{manifest?.manifestCid ? short(manifest.manifestCid, 16) : '—'}</div>
+                </div>
               </div>
 
-              <div className="k">First Chunk CID</div>
-              <div className="v">{manifest?.chunkCIDs?.[0] ? short(manifest.chunkCIDs[0], 16) : '-'}</div>
-              <div className="k">First IV</div>
-              <div className="v">{manifest?.ivs?.[0] ? manifest.ivs[0] : '-'}</div>
-              <div className="k">Hash[0] (expected)</div>
-              <div className="v">{manifest?.leaves?.[0] ? short(manifest.leaves[0], 16) : '-'}</div>
+              <div>
+                <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: 600, color: 'var(--accent)' }}>Security & Status</h4>
+                <div className="data-grid">
+                  <div className="label">AES Key</div>
+                  <div className="value">{aes?.rawHex ? short(aes.rawHex, 16) : '—'}</div>
+                  
+                  <div className="label">Key Source</div>
+                  <div className="value">{keySource || '—'}</div>
+                  
+                  <div className="label">First Chunk CID</div>
+                  <div className="value">{manifest?.chunkCIDs?.[0] ? short(manifest.chunkCIDs[0], 16) : '—'}</div>
+                  
+                  <div className="label">First IV</div>
+                  <div className="value">{manifest?.ivs?.[0] || '—'}</div>
+                  
+                  <div className="label">Hash[0]</div>
+                  <div className="value">{manifest?.leaves?.[0] ? short(manifest.leaves[0], 16) : '—'}</div>
+                </div>
+                
+                {lastChallenge && (
+                  <div style={{ marginTop: 16, padding: 10, backgroundColor: 'var(--panel)', borderRadius: 6, border: '1px solid var(--border)' }}>
+                    <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: 6, color: 'var(--accent)' }}>Last Challenge</div>
+                    <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                      Index <strong>{lastChallenge.idx}</strong> • {short(lastChallenge.cid, 12)}
+                      <span style={{ marginLeft: 8 }}>
+                        {lastChallenge.ok
+                          ? <span className="pill ok">PASSED</span>
+                          : <span className="pill err">FAILED</span>}
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+              
             </div>
           </div>
         </div>
