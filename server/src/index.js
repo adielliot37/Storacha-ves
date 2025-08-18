@@ -115,7 +115,7 @@ async function mcpUploadBase64({ base64, name }) {
       // important: name must match the key MCP returns in payload.files
       const { fileCid } = await mcpUploadBase64({ base64, name: 'manifest.json' });
   
-      // ✅ return manifest **file** CID
+      // return manifest **file** CID
       res.json({ cid: fileCid });
     } catch (e) {
       console.error(e);
