@@ -36,15 +36,52 @@ async function mcpUploadBase64({ base64, name }) {
   
     const text = j?.result?.content?.[0]?.text;
     if (!text) throw new Error('MCP upload: missing result.content[0].text');
+    
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch (parseError) {
+      // If parsing fails, check if it's an error response
+      if (text.includes('error') || text.includes('Error')) {
+        throw new Error(`MCP upload error: ${text}`);
+      }
+      throw new Error(`MCP upload: invalid JSON response: ${text}`);
+    }
+
+    // Check for error in payload
+    if (payload.error) {
+      throw new Error(`MCP upload error: ${payload.error}`);
+    }
   
-    const payload = JSON.parse(text);
-  
-   
-    const fileCid = payload?.files?.[name]?.['/'];
+    // Try to find the file CID with multiple fallback strategies
+    let fileCid = payload?.files?.[name]?.['/'];
+    
+    // If not found with exact name, try other strategies
+    if (!fileCid && payload?.files) {
+      const keys = Object.keys(payload.files);
+      
+      // Strategy 1: Try the first available file
+      if (keys.length > 0) {
+        fileCid = payload.files[keys[0]]?.['/'];
+        console.log(`Using first available file: ${keys[0]} -> ${fileCid}`);
+      }
+      
+      // Strategy 2: Try without extension if original had one
+      if (!fileCid && name.includes('.')) {
+        const nameWithoutExt = name.split('.')[0];
+        for (const key of keys) {
+          if (key.startsWith(nameWithoutExt)) {
+            fileCid = payload.files[key]?.['/'];
+            console.log(`Matched by prefix: ${key} -> ${fileCid}`);
+            break;
+          }
+        }
+      }
+    }
+    
     if (!fileCid) {
-     
       const keys = payload?.files ? Object.keys(payload.files) : [];
-      throw new Error(`MCP upload: file CID not found for "${name}". Available keys: ${keys.join(', ')}`);
+      throw new Error(`MCP upload: file CID not found for "${name}". Available keys: ${keys.join(', ')}. Payload: ${JSON.stringify(payload, null, 2)}`);
     }
   
    

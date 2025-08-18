@@ -114,16 +114,101 @@ export default function App() {
     }
   }
 
+  async function ensureEncryptionKey() {
+    // If we already have a key, use it
+    if (aes && aes.key) {
+      addLog(`Using existing ${keySource} key`, 'ok')
+      return aes
+    }
+
+    // No key available - prompt user for action
+    const action = prompt(
+      'No encryption key found. Choose an option:\n' +
+      '1. Generate new key (will auto-download encrypted backup)\n' +
+      '2. Import existing key file\n' +
+      '3. Derive from password\n\n' +
+      'Enter 1, 2, or 3:'
+    )
+
+    if (!action) {
+      throw new Error('Key setup cancelled by user')
+    }
+
+    switch (action.trim()) {
+      case '1':
+        // Generate new key and auto-download
+        const { key: newKey, rawHex: newRawHex } = await genAESKey()
+        const newAes = { key: newKey, rawHex: newRawHex }
+        setAes(newAes)
+        setKeySource('generated')
+        addLog('Generated new AES-256-GCM key', 'ok')
+        
+        // Auto-download encrypted key backup
+        await autoDownloadKeyBackup(newKey)
+        return newAes
+
+      case '2':
+        // Import key
+        const importedKey = await importKey()
+        if (!importedKey) throw new Error('Key import was cancelled or failed')
+        return importedKey
+
+      case '3':
+        // Derive from password  
+        const derivedKey = await deriveKey()
+        if (!derivedKey) throw new Error('Key derivation was cancelled or failed')
+        return derivedKey
+
+      default:
+        throw new Error('Invalid option selected')
+    }
+  }
+
+  async function autoDownloadKeyBackup(key) {
+    try {
+      const password = prompt('Create a password to encrypt your key backup file:')
+      if (!password) {
+        addLog('Key backup skipped - no password provided', 'warn')
+        return
+      }
+
+      addLog('Creating automatic key backup...', 'warn')
+      const exportedData = await exportEncryptedKey(key, password)
+      
+      const blob = new Blob([exportedData], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `ves-key-backup-${Date.now()}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      
+      addLog('Key backup automatically downloaded!', 'ok')
+    } catch (e) {
+      addLog(`Auto-backup failed: ${e.message}`, 'err')
+      addLog('You can manually export your key later', 'warn')
+    }
+  }
+
   async function encryptAndUpload() {
     if (!file) return
     setBusy(true); setLogs([]); setProgress(0); setFileError('')
     setUploadStartTime(Date.now())
     addLog(`Selected file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`, 'acc')
 
-    const { key, rawHex } = await genAESKey()
-    setAes({ key, rawHex })
-    setKeySource('generated')
-    addLog(`Generated AES-256-GCM key`, 'ok')
+    let encryptionKey
+    try {
+      // Ensure we have an encryption key (existing or new)
+      encryptionKey = await ensureEncryptionKey()
+      if (!encryptionKey) {
+        setBusy(false)
+        return
+      }
+    } catch (e) {
+      addLog(e.message, 'err')
+      setBusy(false)
+      return
+    }
 
     const input = new Uint8Array(await file.arrayBuffer())
     const leaves = []; const chunkCIDs = []; const ivs = []
@@ -132,7 +217,7 @@ export default function App() {
     for (let off=0; off<input.length; off+=CHUNK_SIZE, idx++) {
       const chunk = input.slice(off, Math.min(input.length, off+CHUNK_SIZE))
       addLog(`Chunk ${idx}: ${chunk.length} bytes`)
-      const { iv, ciphertext } = await aesGcmEncrypt(key, chunk)
+      const { iv, ciphertext } = await aesGcmEncrypt(encryptionKey.key, chunk)
       const leaf = await sha256(ciphertext.buffer)
       leaves.push(leaf); ivs.push(bufToHex(iv.buffer))
       addLog(`  iv: ${bufToHex(iv.buffer)}`)
@@ -286,36 +371,44 @@ export default function App() {
   }
 
   async function importKey() {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = '.json'
-    input.onchange = async (e) => {
-      const file = e.target.files[0]
-      if (!file) return
-      
-      const password = prompt('Enter password to decrypt the key file:')
-      if (!password) return
-      
-      try {
-        setBusy(true)
-        addLog('Importing encrypted key...', 'warn')
-        const text = await file.text()
-        const { key, rawHex } = await importEncryptedKey(text, password)
+    return new Promise((resolve) => {
+      const input = document.createElement('input')
+      input.type = 'file'
+      input.accept = '.json'
+      input.onchange = async (e) => {
+        const file = e.target.files[0]
+        if (!file) {
+          resolve()
+          return
+        }
         
-        setAes({ key, rawHex })
-        setKeySource('imported')
-        addLog('Key imported successfully', 'ok')
-      } catch (e) {
-        addLog(`Import failed: ${e.message}`, 'err')
-        if (e.message.includes('decrypt')) {
-          addLog(`Wrong password or corrupted key file`, 'err')
-        } else {
-          addLog(`Invalid key file format or browser issue`, 'err')
+        const password = prompt('Enter password to decrypt the key file:')
+        if (!password) {
+          resolve()
+          return
+        }
+        
+        try {
+          addLog('Importing encrypted key...', 'warn')
+          const text = await file.text()
+          const { key, rawHex } = await importEncryptedKey(text, password)
+          
+          setAes({ key, rawHex })
+          setKeySource('imported')
+          addLog('Key imported successfully', 'ok')
+          resolve({ key, rawHex })
+        } catch (e) {
+          addLog(`Import failed: ${e.message}`, 'err')
+          if (e.message.includes('decrypt')) {
+            addLog(`Wrong password or corrupted key file`, 'err')
+          } else {
+            addLog(`Invalid key file format or browser issue`, 'err')
+          }
+          resolve()
         }
       }
-      setBusy(false)
-    }
-    input.click()
+      input.click()
+    })
   }
 
   const checkPasswordStrength = (password) => {
@@ -352,7 +445,7 @@ export default function App() {
     
     while (!isValidPassword) {
       password = prompt('Enter password to derive encryption key (min 8 chars with mixed case, numbers, and symbols):')
-      if (!password) return
+      if (!password) return null
       
       const strength = checkPasswordStrength(password)
       if (strength.score >= 3) {
@@ -365,7 +458,6 @@ export default function App() {
     }
     
     try {
-      setBusy(true)
       addLog('Deriving key from password...', 'warn')
       const salt = crypto.getRandomValues(new Uint8Array(16))
       const { key, rawHex } = await deriveKeyFromPassword(password, salt)
@@ -373,10 +465,11 @@ export default function App() {
       setAes({ key, rawHex })
       setKeySource('derived')
       addLog('Key derived from password', 'ok')
+      return { key, rawHex }
     } catch (e) {
       addLog(`Key derivation failed: ${e.message}`, 'err')
+      return null
     }
-    setBusy(false)
   }
 
   function clearKey() {
@@ -424,11 +517,13 @@ export default function App() {
           <div>
             <strong>⚠️ Key Management Notice:</strong>
             <br />
-            • Keys generated during encryption are <strong>lost on page refresh</strong>
+            • Generated keys auto-download encrypted backup files
             <br />
-            • Export your keys immediately after generation
+            • Keys are <strong>lost on page refresh</strong> - keep your backup files safe
             <br />
-            • Import existing keys or derive from password to decrypt files
+            • Import previous keys or derive from password to decrypt files
+            <br />
+            • Use the same key to encrypt multiple files efficiently
           </div>
           <button 
             onClick={() => setShowWarning(false)}
