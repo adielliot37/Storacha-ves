@@ -1,4 +1,4 @@
-const BASE = 'http://localhost:8787'
+const BASE = 'https://storacha-ves-backend.vercel.app'
 
 export async function uploadChunk(name, buf, index) {
   const fd = new FormData()
