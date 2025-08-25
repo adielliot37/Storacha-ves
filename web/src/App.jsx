@@ -59,7 +59,18 @@ export default function App() {
   const loadManifestFromHistory = (historyEntry) => {
     setManifest(historyEntry)
     setRootHex(historyEntry.merkleRootSHA256)
-    addLog(`Loaded manifest: ${historyEntry.fileName}`, 'ok')
+    setFile(null) // Clear current file selection
+    
+    // Rebuild layers from manifest for challenge functionality
+    if (historyEntry.leaves) {
+      const leaves = historyEntry.leaves.map(hex => new Uint8Array(hexToBuf(hex)))
+      buildSha256Tree(leaves).then(tree => {
+        setLayers(tree.layers)
+      })
+    }
+    
+    addLog(`Loaded manifest: ${historyEntry.fileName} (${(historyEntry.totalSize / 1024 / 1024).toFixed(2)} MB)`, 'ok')
+    addLog(`Manifest CID: ${historyEntry.manifestCid}`, 'acc')
   }
 
   const clearManifestHistory = () => {
@@ -68,6 +79,89 @@ export default function App() {
       localStorage.removeItem('ves-manifest-history')
       addLog('Manifest history cleared', 'warn')
     }
+  }
+
+  const exportManifestHistory = () => {
+    if (manifestHistory.length === 0) {
+      addLog('No manifest history to export', 'warn')
+      return
+    }
+
+    try {
+      const exportData = {
+        version: '1.0',
+        exportDate: new Date().toISOString(),
+        deviceInfo: `${navigator.userAgent.split(' ')[0]} on ${navigator.platform}`,
+        totalFiles: manifestHistory.length,
+        manifests: manifestHistory
+      }
+
+      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `ves-manifest-backup-${Date.now()}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+
+      addLog(`Exported ${manifestHistory.length} file manifests to backup file`, 'ok')
+      addLog('Keep this file safe to restore your file list on any device', 'acc')
+    } catch (e) {
+      addLog(`Export failed: ${e.message}`, 'err')
+    }
+  }
+
+  const importManifestHistory = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.json'
+    input.onchange = async (e) => {
+      const file = e.target.files[0]
+      if (!file) return
+
+      try {
+        const text = await file.text()
+        const importData = JSON.parse(text)
+
+        // Validate the backup file format
+        if (!importData.version || !importData.manifests || !Array.isArray(importData.manifests)) {
+          throw new Error('Invalid backup file format')
+        }
+
+        const action = confirm(
+          `Import ${importData.totalFiles || importData.manifests.length} files from backup?\n\n` +
+          `Backup created: ${new Date(importData.exportDate).toLocaleString()}\n` +
+          `Device: ${importData.deviceInfo || 'Unknown'}\n\n` +
+          `This will ${manifestHistory.length > 0 ? 'merge with' : 'replace'} your current history.`
+        )
+
+        if (!action) return
+
+        // Merge with existing history, avoiding duplicates
+        const existingIds = new Set(manifestHistory.map(m => m.id))
+        const newManifests = importData.manifests.filter(m => !existingIds.has(m.id))
+        const mergedHistory = [...manifestHistory, ...newManifests].slice(0, 50) // Increase limit for imports
+        
+        setManifestHistory(mergedHistory)
+        localStorage.setItem('ves-manifest-history', JSON.stringify(mergedHistory))
+
+        const importedCount = newManifests.length
+        const skippedCount = importData.manifests.length - importedCount
+
+        addLog(`Imported ${importedCount} new file manifests`, 'ok')
+        if (skippedCount > 0) {
+          addLog(`Skipped ${skippedCount} duplicate files`, 'warn')
+        }
+        addLog(`Total files in history: ${mergedHistory.length}`, 'acc')
+
+      } catch (e) {
+        addLog(`Import failed: ${e.message}`, 'err')
+        if (e.message.includes('JSON')) {
+          addLog('Invalid backup file - must be a VES manifest backup JSON file', 'err')
+        }
+      }
+    }
+    input.click()
   }
 
   const validateFile = (file) => {
@@ -304,43 +398,90 @@ export default function App() {
   }
 
   async function decryptAll() {
-    if (!manifest || !aes) return
-    setBusy(true); setProgress(0); addLog(`Decrypt start…`, 'warn')
+    if (!manifest || !aes) {
+      addLog('Missing manifest or decryption key', 'err')
+      return
+    }
+    
+    setBusy(true); setProgress(0); 
+    addLog(`Starting decryption of ${manifest.fileName} (${(manifest.totalSize / 1024 / 1024).toFixed(2)} MB)`, 'warn')
+    addLog(`Key source: ${keySource} | Chunks: ${manifest.chunkCIDs.length}`, 'acc')
 
+    const startTime = Date.now()
     const out = new Uint8Array(manifest.totalSize)
     let off = 0
+    let retryCount = 0
+    const maxRetries = 3
+    
     for (let i=0; i<manifest.chunkCIDs.length; i++) {
       const url = `https://w3s.link/ipfs/${manifest.chunkCIDs[i]}`
-      addLog(`  fetch chunk[${i}] ${short(url, 30)}`)
+      let success = false
+      
+      // Retry logic for network issues
+      for (let attempt = 1; attempt <= maxRetries && !success; attempt++) {
+        try {
+          addLog(`  fetching chunk[${i}/${manifest.chunkCIDs.length}]${attempt > 1 ? ` (attempt ${attempt})` : ''}`)
 
-      const r = await fetch(url)
-      if (!r.ok) { 
-        addLog(`  fetch failed: HTTP ${r.status} - ${r.statusText}`, 'err')
-        addLog(`  Unable to download chunk ${i}. Check network and try again.`, 'err')
-        setBusy(false); return 
-      }
-      const enc = new Uint8Array(await r.arrayBuffer())
-      addLog(`  received ${enc.length} bytes`)
+          const r = await fetch(url)
+          if (!r.ok) { 
+            throw new Error(`HTTP ${r.status} - ${r.statusText}`)
+          }
+          
+          const enc = new Uint8Array(await r.arrayBuffer())
+          addLog(`  received ${enc.length} bytes`)
 
-      try {
-        const iv = new Uint8Array(hexToBuf(manifest.ivs[i]))
-        const pt = await aesGcmDecrypt(aes.key, iv, enc)
-        out.set(pt, off); off += pt.length
-        addLog(`  decrypted chunk[${i}] (${pt.length} bytes)`, 'ok')
-      } catch (e) {
-        addLog(`  decrypt error: ${e?.message || e}`, 'err')
-        addLog(`  Chunk ${i} decryption failed. Verify correct key is loaded.`, 'err')
-        setBusy(false); return
+          const iv = new Uint8Array(hexToBuf(manifest.ivs[i]))
+          const pt = await aesGcmDecrypt(aes.key, iv, enc)
+          out.set(pt, off); off += pt.length
+          addLog(`  decrypted chunk[${i}] (${pt.length} bytes)`, 'ok')
+          
+          success = true
+          
+        } catch (e) {
+          retryCount++
+          if (attempt === maxRetries) {
+            addLog(`  chunk ${i} failed after ${maxRetries} attempts: ${e?.message || e}`, 'err')
+            if (e.message && e.message.includes('decrypt')) {
+              addLog(`  Decryption failed - wrong key or corrupted data`, 'err')
+            } else {
+              addLog(`  Network or IPFS error - file may no longer be available`, 'err')
+            }
+            setBusy(false); 
+            return
+          } else {
+            addLog(`  attempt ${attempt} failed: ${e?.message || e}, retrying...`, 'warn')
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt)) // exponential backoff
+          }
+        }
       }
-      setProgress(Math.round(((i+1) / manifest.chunkCIDs.length) * 100))
+      
+      const progressPercent = Math.round(((i+1) / manifest.chunkCIDs.length) * 100)
+      setProgress(progressPercent)
+      
+      // ETA calculation
+      const elapsed = Date.now() - startTime
+      const eta = elapsed / (i+1) * (manifest.chunkCIDs.length - i - 1)
+      if (eta > 1000) {
+        addLog(`  progress: ${progressPercent}% | ETA: ${Math.round(eta / 1000)}s`)
+      }
     }
 
-    const blob = new Blob([out], { type:'application/octet-stream' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url; a.download = `DECRYPTED-${manifest.fileName}`; a.click()
-    URL.revokeObjectURL(url)
-    addLog(`Decrypt done → downloaded DECRYPTED-${manifest.fileName}`, 'ok')
+    try {
+      const blob = new Blob([out], { type:'application/octet-stream' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = `DECRYPTED-${manifest.fileName}`; a.click()
+      URL.revokeObjectURL(url)
+      
+      const totalTime = Math.round((Date.now() - startTime) / 1000)
+      addLog(`Decryption completed in ${totalTime}s → downloaded DECRYPTED-${manifest.fileName}`, 'ok')
+      if (retryCount > 0) {
+        addLog(`Note: ${retryCount} retries were needed due to network issues`, 'warn')
+      }
+    } catch (e) {
+      addLog(`Download failed: ${e.message}`, 'err')
+    }
+    
     setBusy(false)
   }
 
@@ -541,6 +682,76 @@ export default function App() {
         </div>
       )}
 
+      {manifestHistory.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div className="card" style={{ backgroundColor: '#1a2a1a', border: '1px solid #36d399' }}>
+            <div style={{ marginBottom: 16 }}>
+              <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 600, color: '#36d399' }}>📁 Previously Uploaded Files</h3>
+              <div style={{ fontSize: '14px', color: 'var(--muted)', marginBottom: 12 }}>
+                You have {manifestHistory.length} file{manifestHistory.length === 1 ? '' : 's'} available for decryption. Load any file to challenge or download it.
+              </div>
+              <div style={{ maxHeight: 150, overflowY: 'auto', display: 'grid', gap: 8 }}>
+                {manifestHistory.slice(0, 3).map((entry) => (
+                  <div key={entry.id} style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center',
+                    padding: '8px 12px',
+                    backgroundColor: 'var(--panel)',
+                    borderRadius: '6px',
+                    border: manifest?.id === entry.id ? '1px solid var(--accent)' : '1px solid var(--border)'
+                  }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: '13px', color: manifest?.id === entry.id ? 'var(--accent)' : 'inherit' }}>
+                        {entry.fileName}
+                      </div>
+                      <div style={{ fontSize: '11px', color: 'var(--muted)' }}>
+                        {(entry.totalSize / 1024 / 1024).toFixed(1)} MB • {new Date(entry.timestamp).toLocaleDateString()}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button 
+                        className="btn" 
+                        onClick={() => loadManifestFromHistory(entry)}
+                        disabled={manifest?.id === entry.id}
+                        style={{ fontSize: '11px', padding: '4px 8px' }}
+                      >
+                        {manifest?.id === entry.id ? 'Active' : 'Load'}
+                      </button>
+                      {manifest?.id === entry.id && (
+                        aes ? (
+                          <button 
+                            className="btn"
+                            onClick={decryptAll}
+                            disabled={busy}
+                            style={{ fontSize: '11px', padding: '4px 8px', backgroundColor: 'var(--ok)' }}
+                          >
+                            Download
+                          </button>
+                        ) : (
+                          <div style={{ fontSize: '10px', color: 'var(--err)', textAlign: 'center' }}>
+                            Need key to decrypt
+                          </div>
+                        )
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {manifestHistory.length > 3 && (
+                  <button 
+                    className="btn" 
+                    onClick={() => setShowHistory(true)}
+                    style={{ fontSize: '12px', padding: '6px', textAlign: 'center' }}
+                  >
+                    View all {manifestHistory.length} files...
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="row" style={{ marginTop: 16 }}>
         <div className="card">
           <div style={{ marginBottom: 20 }}>
@@ -618,7 +829,7 @@ export default function App() {
                 Challenge
               </button>
               <button className="btn" onClick={decryptAll} disabled={!manifest || !aes || busy}>
-                Decrypt
+                Decrypt & Download
               </button>
             </div>
           </div>
@@ -626,10 +837,10 @@ export default function App() {
           <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
             <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 600 }}>Key Management</h3>
             <div style={{ display:'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10 }}>
-              <button className="btn key-btn import" onClick={importKey} disabled={busy}>
+              <button className="btn key-btn import" onClick={importKey} disabled={busy || aes}>
                 Import Key
               </button>
-              <button className="btn key-btn derive" onClick={deriveKey} disabled={busy}>
+              <button className="btn key-btn derive" onClick={deriveKey} disabled={busy || aes}>
                 Derive Key  
               </button>
               <button className="btn key-btn export" onClick={exportKey} disabled={!aes || busy}>
@@ -639,48 +850,109 @@ export default function App() {
                 Clear Key
               </button>
               <button className="btn" onClick={() => setShowHistory(!showHistory)} disabled={busy}>
-                {showHistory ? 'Hide History' : 'Show History'}
+                {showHistory ? 'Hide History' : `Show History (${manifestHistory.length})`}
               </button>
+            </div>
+            
+            <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+              <h4 style={{ margin: '0 0 8px 0', fontSize: '14px', fontWeight: 600, color: 'var(--accent)' }}>🔄 File List Backup</h4>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn" onClick={importManifestHistory} disabled={busy} style={{ fontSize: '12px', padding: '6px 12px' }}>
+                  📁 Import File List
+                </button>
+                <button className="btn" onClick={exportManifestHistory} disabled={busy || manifestHistory.length === 0} style={{ fontSize: '12px', padding: '6px 12px' }}>
+                  💾 Export File List
+                </button>
+              </div>
+              <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: 6 }}>
+                Backup your file list to access from any device. Works with same encryption key.
+              </div>
             </div>
             
             {showHistory && (
               <div style={{ marginTop: 16, padding: 12, backgroundColor: 'var(--panel)', borderRadius: 8, border: '1px solid var(--border)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                   <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>Manifest History ({manifestHistory.length})</h4>
-                  {manifestHistory.length > 0 && (
-                    <button className="btn" onClick={clearManifestHistory} style={{ fontSize: '12px', padding: '4px 8px' }}>
-                      Clear All
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button className="btn" onClick={importManifestHistory} disabled={busy} style={{ fontSize: '11px', padding: '3px 6px', backgroundColor: 'var(--accent)' }}>
+                      📁 Import Backup
                     </button>
-                  )}
+                    {manifestHistory.length > 0 && (
+                      <>
+                        <button className="btn" onClick={exportManifestHistory} disabled={busy} style={{ fontSize: '11px', padding: '3px 6px', backgroundColor: 'var(--ok)' }}>
+                          💾 Export Backup
+                        </button>
+                        <button className="btn" onClick={clearManifestHistory} style={{ fontSize: '11px', padding: '3px 6px' }}>
+                          🗑️ Clear All
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
                 
                 {manifestHistory.length === 0 ? (
                   <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: '14px', padding: 16 }}>
-                    No manifest history yet. Encrypt some files to see them here.
+                    No previous uploads found. Encrypt some files to see them here for future access.
                   </div>
                 ) : (
-                  <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+                  <div style={{ maxHeight: 250, overflowY: 'auto' }}>
                     {manifestHistory.map((entry, idx) => (
                       <div key={entry.id} style={{ 
                         display: 'flex', 
                         justifyContent: 'space-between', 
                         alignItems: 'center',
-                        padding: '8px 0',
-                        borderBottom: idx < manifestHistory.length - 1 ? '1px solid var(--border)' : 'none'
+                        padding: '12px 0',
+                        borderBottom: idx < manifestHistory.length - 1 ? '1px solid var(--border)' : 'none',
+                        backgroundColor: manifest?.id === entry.id ? 'rgba(124, 157, 255, 0.1)' : 'transparent',
+                        borderRadius: manifest?.id === entry.id ? '4px' : '0',
+                        paddingLeft: manifest?.id === entry.id ? '8px' : '0',
+                        paddingRight: manifest?.id === entry.id ? '8px' : '0'
                       }}>
-                        <div>
-                          <div style={{ fontWeight: 600, fontSize: '13px' }}>{entry.fileName}</div>
-                          <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
-                            {new Date(entry.timestamp).toLocaleString()} • {(entry.totalSize / 1024 / 1024).toFixed(2)} MB
+                        <div style={{ flex: 1 }}>
+                          <div style={{ 
+                            fontWeight: 600, 
+                            fontSize: '13px', 
+                            color: manifest?.id === entry.id ? 'var(--accent)' : 'inherit',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 6
+                          }}>
+                            {manifest?.id === entry.id && <span style={{ fontSize: '10px' }}>●</span>}
+                            {entry.fileName}
+                          </div>
+                          <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: 2 }}>
+                            {new Date(entry.timestamp).toLocaleString()} • {(entry.totalSize / 1024 / 1024).toFixed(2)} MB • {entry.chunkCIDs?.length || 0} chunks
+                          </div>
+                          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: 2 }}>
+                            CID: {short(entry.manifestCid, 12)}
                           </div>
                         </div>
-                        <button 
-                          className="btn" 
-                          onClick={() => loadManifestFromHistory(entry)}
-                          style={{ fontSize: '12px', padding: '4px 8px' }}
-                        >
-                          Load
-                        </button>
+                        <div style={{ display: 'flex', gap: 4, flexDirection: 'column' }}>
+                          <button 
+                            className="btn" 
+                            onClick={() => loadManifestFromHistory(entry)}
+                            disabled={manifest?.id === entry.id}
+                            style={{ fontSize: '11px', padding: '3px 6px', minWidth: '50px' }}
+                          >
+                            {manifest?.id === entry.id ? 'Active' : 'Load'}
+                          </button>
+                          {manifest?.id === entry.id && (
+                            aes ? (
+                              <button 
+                                className="btn"
+                                onClick={decryptAll}
+                                disabled={busy}
+                                style={{ fontSize: '10px', padding: '2px 4px', backgroundColor: 'var(--ok)' }}
+                              >
+                                Download
+                              </button>
+                            ) : (
+                              <div style={{ fontSize: '9px', color: 'var(--err)', textAlign: 'center', padding: '2px' }}>
+                                Need key
+                              </div>
+                            )
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -742,7 +1014,14 @@ export default function App() {
                   <div className="value">{short(rootHex, 16) || '—'}</div>
                   
                   <div className="label">Manifest CID</div>
-                  <div className="value">{manifest?.manifestCid ? short(manifest.manifestCid, 16) : '—'}</div>
+                  <div className="value" style={{ cursor: manifest?.manifestCid ? 'pointer' : 'default' }} 
+                       onClick={manifest?.manifestCid ? () => {
+                         navigator.clipboard.writeText(manifest.manifestCid)
+                         addLog('Manifest CID copied to clipboard', 'ok')
+                       } : undefined}
+                       title={manifest?.manifestCid ? 'Click to copy full CID' : ''}>
+                    {manifest?.manifestCid ? short(manifest.manifestCid, 16) : '—'}
+                  </div>
                 </div>
               </div>
 
