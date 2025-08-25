@@ -16,7 +16,9 @@ if (!MCP_URL || !DELEGATION) {
   process.exit(1)
 }
 
-app.use(cors({ origin: ORIGIN }))
+app.use(cors({ 
+  origin: [ORIGIN, 'http://localhost:5173', 'http://localhost:3000'] 
+}))
 app.get('/health', (_req, res) => res.json({ ok: true }))
 
 async function mcpUploadBase64({ base64, name }) {
