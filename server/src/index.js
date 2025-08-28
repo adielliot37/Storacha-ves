@@ -10,12 +10,14 @@ const PORT = process.env.PORT || 8787
 const MCP_URL = process.env.MCP_REST_URL
 const DELEGATION = process.env.DELEGATION
 const ORIGIN = process.env.CLIENT_ORIGIN
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY
 
 if (!MCP_URL || !DELEGATION) {
   console.error('Missing MCP_REST_URL or DELEGATION in .env')
   process.exit(1)
 }
 
+app.use(express.json())
 app.use(cors({ 
   origin: [ORIGIN, 'http://localhost:5173', 'http://localhost:3000'] 
 }))
@@ -124,5 +126,49 @@ async function mcpUploadBase64({ base64, name }) {
       res.status(500).json({ error: e.message });
     }
   });
+
+app.post('/generate-embedding', async (req, res) => {
+  try {
+    if (!OPENAI_API_KEY) {
+      return res.status(500).json({ error: 'OpenAI API key not configured' })
+    }
+
+    const { text } = req.body
+    if (!text) {
+      return res.status(400).json({ error: 'Text is required' })
+    }
+
+    const response = await fetch('https://api.openai.com/v1/embeddings', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'text-embedding-3-small',
+        input: text.substring(0, 8000),
+        encoding_format: 'float'
+      })
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error('OpenAI API error:', response.status, errorText)
+      return res.status(response.status).json({ 
+        error: `OpenAI API error: ${response.status}` 
+      })
+    }
+
+    const data = await response.json()
+    res.json({ 
+      embedding: data.data[0].embedding,
+      model: 'text-embedding-3-small'
+    })
+
+  } catch (error) {
+    console.error('Embedding generation error:', error)
+    res.status(500).json({ error: 'Failed to generate embedding' })
+  }
+})
 
 app.listen(PORT, () => console.log(`VES server (MCP REST) on :${PORT}`))

@@ -4,6 +4,7 @@ import { genAESKey, aesGcmEncrypt, aesGcmDecrypt, sha256, exportEncryptedKey, im
 import { buildSha256Tree, merkleProofFromLayers, verifyProofSha256 } from './utils/merkle.js'
 import { bufToHex, hexToBuf } from './utils/bytes.js'
 import { uploadChunk, uploadManifest } from './utils/api.js'
+import { generateSemanticEmbedding, encryptSemanticData, advancedSearch, configureOpenAI, isSemanticSearchAvailable, getSearchSuggestions } from './utils/semantic.js'
 
 const CHUNK_SIZE = 4 * 1024 * 1024 // 4MB
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
@@ -29,6 +30,13 @@ export default function App() {
   const [uploadStartTime, setUploadStartTime] = useState(null)
   const [manifestHistory, setManifestHistory] = useState([])
   const [showHistory, setShowHistory] = useState(false)
+  
+  // Semantic search state
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [isSearching, setIsSearching] = useState(false)
+  const [searchSuggestions, setSearchSuggestions] = useState([])
+  const [semanticSearchEnabled, setSemanticSearchEnabled] = useState(false)
 
   const addLog = (text, level = '') =>
     setLogs(prev => [...prev, { time: ts(), text, level }])
@@ -42,6 +50,16 @@ export default function App() {
         console.warn('Failed to load manifest history:', e)
       }
     }
+    
+    // Check if semantic search is available on server
+    isSemanticSearchAvailable().then(available => {
+      if (available) {
+        setSemanticSearchEnabled(true)
+        addLog('AI semantic search enabled', 'ok')
+      }
+    }).catch(error => {
+      console.warn('Failed to check semantic search availability:', error)
+    })
   }, [])
 
   const saveManifestToHistory = (manifest) => {
@@ -338,6 +356,20 @@ export default function App() {
     setRootHex(rootHex)
     addLog(`Merkle root (SHA-256): ${rootHex}`, 'acc')
 
+    // Generate semantic embeddings if OpenAI is configured
+    let semanticData = null
+    if (semanticSearchEnabled) {
+      try {
+        addLog('Generating semantic embeddings...', 'warn')
+        const embedding = await generateSemanticEmbedding(file)
+        semanticData = await encryptSemanticData(embedding, encryptionKey.key)
+        addLog('Semantic data encrypted and ready', 'ok')
+      } catch (error) {
+        addLog(`Semantic embedding failed: ${error.message}`, 'warn')
+        addLog('File will be uploaded without semantic search capability', 'warn')
+      }
+    }
+
     const man = {
       version: 3,
       fileName: file.name,
@@ -347,7 +379,8 @@ export default function App() {
       merkleRootSHA256: rootHex,
       chunkCIDs,
       ivs,
-      algo: { hash: 'sha256', enc: 'aes-256-gcm' }
+      algo: { hash: 'sha256', enc: 'aes-256-gcm' },
+      ...(semanticData && { semanticData })
     }
 
     const { cid: manifestCid } = await uploadManifest(man)
@@ -355,6 +388,11 @@ export default function App() {
     setManifest(finalManifest)
     saveManifestToHistory(finalManifest)
     addLog(`Manifest uploaded → CID: ${manifestCid}`, 'ok')
+    
+    // Update search suggestions after successful upload
+    if (semanticSearchEnabled && aes) {
+      setTimeout(loadSearchSuggestions, 1000)
+    }
 
     setBusy(false)
   }
@@ -620,6 +658,50 @@ export default function App() {
     addLog('Key cleared', 'warn')
   }
 
+
+  // Load search suggestions
+  const loadSearchSuggestions = async () => {
+    if (!aes || !semanticSearchEnabled) return
+    
+    try {
+      const suggestions = await getSearchSuggestions(manifestHistory, aes.key)
+      setSearchSuggestions(suggestions)
+    } catch (error) {
+      console.warn('Failed to load search suggestions:', error)
+    }
+  }
+
+  // Perform semantic search
+  const performSearch = async () => {
+    if (!searchQuery.trim() || !aes || !semanticSearchEnabled) return
+    
+    setIsSearching(true)
+    setSearchResults([])
+    
+    try {
+      addLog(`Searching for: "${searchQuery}"`, 'warn')
+      const results = await advancedSearch(searchQuery.trim(), manifestHistory, aes.key, {
+        maxResults: 10,
+        semanticThreshold: 0.25  // Lower threshold for better matches
+      })
+      
+      setSearchResults(results)
+      addLog(`Found ${results.length} matching files`, results.length > 0 ? 'ok' : 'warn')
+      
+      if (results.length === 0) {
+        addLog('Try different keywords or upload more files with semantic data', 'acc')
+      }
+    } catch (error) {
+      addLog(`Search failed: ${error.message}`, 'err')
+      if (error.message.includes('API key')) {
+        addLog('Check your OpenAI API key configuration', 'err')
+      }
+    }
+    
+    setIsSearching(false)
+  }
+
+
   return (
     <div className="app">
       <div style={{ 
@@ -747,6 +829,131 @@ export default function App() {
                   </button>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI Semantic Search Interface */}
+      {semanticSearchEnabled && (
+        <div style={{ marginTop: 16 }}>
+          <div className="card" style={{ backgroundColor: '#1a2a2a', border: '1px solid #36d399' }}>
+            <div style={{ marginBottom: 16 }}>
+              <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 600, color: '#36d399', display: 'flex', alignItems: 'center', gap: 8 }}>
+                AI Semantic Search
+                <span className="pill ok" style={{ fontSize: '11px' }}>Enabled</span>
+              </h3>
+              
+              <div style={{ fontSize: '14px', color: 'var(--muted)', marginBottom: 12 }}>
+                Search your encrypted files by meaning, not just keywords. All processing happens client-side with your encrypted data.
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && performSearch()}
+                  placeholder="Search your files... (e.g., 'contract with red logo', 'python code', 'last week documents')"
+                  style={{
+                    flex: 1,
+                    minWidth: '250px',
+                    padding: '8px 12px',
+                    backgroundColor: 'var(--panel)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '6px',
+                    color: 'inherit',
+                    fontSize: '14px'
+                  }}
+                  disabled={!aes || isSearching}
+                />
+                <button 
+                  className="btn" 
+                  onClick={performSearch}
+                  disabled={!searchQuery.trim() || !aes || isSearching}
+                  style={{ backgroundColor: 'var(--accent)', minWidth: '100px' }}
+                >
+                  {isSearching ? 'Searching...' : 'Search'}
+                </button>
+              </div>
+
+              {/* Search Suggestions */}
+              {searchSuggestions.length > 0 && !searchQuery && (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: '12px', color: 'var(--muted)', marginBottom: 6 }}>Quick suggestions:</div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {searchSuggestions.map((suggestion, idx) => (
+                      <button
+                        key={idx}
+                        className="btn"
+                        onClick={() => setSearchQuery(suggestion.text)}
+                        style={{ 
+                          fontSize: '11px', 
+                          padding: '4px 8px',
+                          backgroundColor: 'var(--panel)',
+                          border: '1px solid var(--border)'
+                        }}
+                      >
+                        {suggestion.icon} {suggestion.text}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Search Results */}
+              {searchResults.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: 8, color: 'var(--accent)' }}>
+                    Found {searchResults.length} matching files:
+                  </div>
+                  <div style={{ maxHeight: '200px', overflowY: 'auto', display: 'grid', gap: 6 }}>
+                    {searchResults.map((result, idx) => (
+                      <div
+                        key={idx}
+                        style={{
+                          padding: '8px 12px',
+                          backgroundColor: 'var(--panel)',
+                          borderRadius: '6px',
+                          border: '1px solid var(--border)',
+                          cursor: 'pointer'
+                        }}
+                        onClick={() => loadManifestFromHistory(result.manifest)}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontWeight: 600, fontSize: '13px' }}>
+                              {result.manifest.fileName}
+                            </div>
+                            <div style={{ fontSize: '11px', color: 'var(--muted)' }}>
+                              {(result.manifest.totalSize / 1024).toFixed(1)}KB • 
+                              Relevance: {(result.totalScore * 100).toFixed(0)}% • 
+                              {result.matchTypes?.map(m => m.type).join(', ')}
+                            </div>
+                            {result.textPreview && (
+                              <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: 2, fontStyle: 'italic' }}>
+                                "{result.textPreview.substring(0, 80)}..."
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', gap: 4 }}>
+                            <span className={`pill ${result.relevanceLevel === 'high' ? 'ok' : result.relevanceLevel === 'medium' ? 'warn' : ''}`} 
+                                  style={{ fontSize: '10px' }}>
+                              {result.relevanceLevel}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {searchQuery && searchResults.length === 0 && !isSearching && (
+                <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: '14px', padding: '12px' }}>
+                  No matching files found. Try different keywords or upload more files.
+                </div>
+              )}
             </div>
           </div>
         </div>
