@@ -2,6 +2,8 @@
 
 This project implements a verifiable encrypted storage system using Storacha's MCP REST API. It provides client-side encryption, decentralized storage, integrity verification, and decryption with comprehensive key management and automatic backup systems.
 
+### Blog: [Storacha VES: Verifiable Encrypted Storage Made Simple](https://medium.com/@akashjana663/storacha-ves-verifiable-encrypted-storage-made-simple-7f165f792ae6)
+
 ## Features
 
 ### Core Functionality
